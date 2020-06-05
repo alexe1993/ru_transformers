@@ -3,10 +3,9 @@ from yt_encoder import YTEncoder
 from transformers import GPT2LMHeadModel
 import threading
 import regex as re
-
+import torch
+device = "cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu"
 from os import environ
-device = environ.get('DEVICE', 'cuda:0')
-
 flavor_id = device + environ.get('INSTANCE', ':0')
 from tendo import singleton
 me = singleton.SingleInstance(flavor_id=flavor_id)
@@ -19,7 +18,7 @@ for handler in logging.root.handlers[:]:
 logging.basicConfig(filename=f"logs/{hash(flavor_id)}.log", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-model_path = 'gpt2/medium'
+model_path = 'gpt2/medium/pelevin'
 
 tokenizer = YTEncoder.from_pretrained(model_path)
 
@@ -27,12 +26,10 @@ model = GPT2LMHeadModel.from_pretrained(model_path)
 model.to(device)
 model.eval()
 
-poetry_model = GPT2LMHeadModel.from_pretrained(model_path + '/poetry')
-poetry_model.to(device)
-poetry_model.eval()
+if torch.cuda.is_available():
+    from apex import amp
+    model = amp.initialize(model, opt_level='O2')
 
-from apex import amp
-[model, poetry_model] = amp.initialize([model, poetry_model], opt_level='O2')
 
 def get_sample(model, prompt, length:int, num_samples:int, allow_linebreak:bool):
     logger.info(prompt)
@@ -81,6 +78,9 @@ app.add_middleware(
 
 lock = threading.RLock()
 
+sample = get_sample(model,'Привет', 30, 1, True)
+print(sample)
+
 class Prompt(BaseModel):
     prompt:str = Schema(..., max_length=3000, title='Model prompt')
     length:int = Schema(15, ge=1, le=60, title='Number of tokens generated in each sample')
@@ -91,15 +91,6 @@ class Prompt(BaseModel):
 def gen_sample(prompt: Prompt):
     with lock:
         return {"replies": get_sample(model, prompt.prompt, prompt.length, prompt.num_samples, prompt.allow_linebreak)}
-
-class PromptPoetry(BaseModel):
-    prompt:str = Schema(..., max_length=3000, title='Model prompt')
-    length:int = Schema(15, ge=1, le=150, title='Number of tokens generated in each sample')
-
-@app.post("/gpt2_poetry/")
-def gen_sample(prompt: PromptPoetry):
-    with lock:
-        return {"replies": get_sample(poetry_model, prompt.prompt, prompt.length, 1, True)}
 
 @app.get("/health")
 def healthcheck():
